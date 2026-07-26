@@ -229,6 +229,7 @@ def main():
     checked_count = 0
     api_failures = 0
     fetch_failures = 0
+    feed_results = []  # per-feed diagnostic detail, returned to the caller
 
     for feed in FEEDS:
         print(f"Checking {feed['name']}...")
@@ -238,7 +239,11 @@ def main():
             print(f"  ! failed to fetch {feed['name']}: {e}", file=sys.stderr)
             log_line({"event": "fetch_failed", "feed": feed["name"], "error": str(e)})
             fetch_failures += 1
+            feed_results.append({"feed": feed["name"], "ok": False, "error": str(e), "items_found": 0, "new_items": 0})
             continue
+
+        feed_new_before = new_count
+        feed_checked_before = checked_count
 
         for item in items:
             if item["seen_key"] in seen:
@@ -286,6 +291,13 @@ def main():
             new_count += 1
             print(f"  + added [{alert['severity']}] {alert['titleEn'][:70]}")
 
+        feed_results.append({
+            "feed": feed["name"], "ok": True, "error": None,
+            "items_found": len(items),
+            "new_items": checked_count - feed_checked_before,
+            "added": new_count - feed_new_before,
+        })
+
     save_json(SEEN_FILE, seen)
     save_json(ALERTS_FILE, alerts)
     print(f"\nDone. Checked {checked_count} new feed item(s), added {new_count} alert(s). "
@@ -293,12 +305,12 @@ def main():
     if new_count >= MAX_NEW_PER_RUN and checked_count > new_count:
         print(f"Note: MAX_NEW_PER_RUN cap reached — some items were left for the next run.")
 
-    # Surface real problems loudly instead of quietly reporting "0 alerts
-    # added" forever with no explanation.
+    # Surface a TOTAL outage loudly (every feed unreachable) — partial
+    # failures are still visible via feed_results below without aborting.
     if fetch_failures == len(FEEDS):
         raise RuntimeError(
             f"Could not fetch ANY of the {len(FEEDS)} feed(s) this run — "
-            f"see ingest_log.jsonl (event: fetch_failed) for the exact error per feed. "
+            f"see feed_results in the last run summary for the exact error per feed. "
             f"This is often outbound network restrictions on the hosting platform, "
             f"or the feed URL itself changed."
         )
@@ -313,6 +325,7 @@ def main():
         "added": new_count,
         "api_failures": api_failures,
         "fetch_failures": fetch_failures,
+        "feed_results": feed_results,
     }
 
 
