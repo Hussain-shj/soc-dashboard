@@ -215,7 +215,13 @@ def classify(item):
         log_line({"event": "api_call_failed", "title": item["title_en"], "error": str(e)})
         return None, str(e)
 
-    text = resp.content[0].text.strip()
+    text_blocks = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
+    if not text_blocks:
+        err = "No text block in Claude's response (only non-text content, e.g. a thinking block)"
+        print(f"  ! {err} for: {item['title_en'][:60]}", file=sys.stderr)
+        log_line({"event": "no_text_block", "title": item["title_en"]})
+        return None, err
+    text = text_blocks[0].strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     try:
         return json.loads(text), None
