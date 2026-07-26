@@ -67,9 +67,16 @@ except ImportError:
 
 FEEDS = [
     {"name": "The Hacker News", "url": "https://feeds.feedburner.com/TheHackersNews"},
-    {"name": "BleepingComputer", "url": "https://www.bleepingcomputer.com/feed/"},
+    {"name": "Dark Reading", "url": "https://www.darkreading.com/rss.xml"},
+    # BleepingComputer (https://www.bleepingcomputer.com/feed/) is deliberately
+    # NOT included: it returns HTTP 403 to requests from cloud/datacenter IPs
+    # (Railway, AWS, etc.) regardless of headers — this is the publisher
+    # blocking hosting-provider IP ranges, not a bug in this script. It works
+    # fine from a home/office connection if you ever run this script locally.
+    #
     # Add more RSS-capable sources here, e.g.:
-    # {"name": "CISA", "url": "https://www.cisa.gov/cybersecurity-advisories/all.xml"},
+    # {"name": "CISA Advisories", "url": "https://www.cisa.gov/cybersecurity-advisories/all.xml"},
+    # {"name": "Huntress", "url": "https://www.huntress.com/blog/rss.xml"},
 ]
 
 SEEN_FILE = "seen_ids.json"        # tracks which feed items we've already triaged
