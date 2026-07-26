@@ -194,17 +194,26 @@ def classify(item):
         pub_date=item["pub_date"],
         source=item["source"],
     )
-    resp = client.messages.create(
-        model=MODEL,
-        max_tokens=1200,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        # Bad/missing API key, rate limit, network hiccup, etc. Log the real
+        # reason and skip just this item instead of crashing the whole run.
+        print(f"  ! Claude API call failed for '{item['title_en'][:60]}': {e}", file=sys.stderr)
+        log_line({"event": "api_call_failed", "title": item["title_en"], "error": str(e)})
+        return None
+
     text = resp.content[0].text.strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         print(f"  ! could not parse Claude's response for: {item['title_en'][:60]}", file=sys.stderr)
+        log_line({"event": "parse_failed", "title": item["title_en"], "raw_response": text[:500]})
         return None
 
 
@@ -218,6 +227,8 @@ def main():
     next_id = max([a.get("id", 0) for a in alerts], default=0) + 1
     new_count = 0
     checked_count = 0
+    api_failures = 0
+    fetch_failures = 0
 
     for feed in FEEDS:
         print(f"Checking {feed['name']}...")
@@ -226,6 +237,7 @@ def main():
         except Exception as e:
             print(f"  ! failed to fetch {feed['name']}: {e}", file=sys.stderr)
             log_line({"event": "fetch_failed", "feed": feed["name"], "error": str(e)})
+            fetch_failures += 1
             continue
 
         for item in items:
@@ -240,28 +252,34 @@ def main():
             result = classify(item)
             if not result:
                 log_line({"event": "classify_failed", "title": item["title_en"], "source": item["source"]})
+                api_failures += 1
                 continue
 
             if not result.get("relevant"):
                 log_line({"event": "skipped_not_relevant", "title": item["title_en"], "source": item["source"]})
                 continue
 
-            alert = {
-                "id": next_id,
-                "severity": result["severity"],
-                "category": result["category"],
-                "audience": result["audience"],
-                "reason": result["reason"],
-                "title": result["title"],
-                "titleEn": result["titleEn"],
-                "date": datetime.now(timezone.utc).strftime("%d %B %Y"),
-                "source": item["source"],
-                "desc": result["desc"],
-                "descEn": result["descEn"],
-                "mitig": result["mitig"],
-                "mitigEn": result["mitigEn"],
-                "_sourceLink": item["link"],
-            }
+            try:
+                alert = {
+                    "id": next_id,
+                    "severity": result["severity"],
+                    "category": result["category"],
+                    "audience": result["audience"],
+                    "reason": result["reason"],
+                    "title": result["title"],
+                    "titleEn": result["titleEn"],
+                    "date": datetime.now(timezone.utc).strftime("%d %B %Y"),
+                    "source": item["source"],
+                    "desc": result["desc"],
+                    "descEn": result["descEn"],
+                    "mitig": result["mitig"],
+                    "mitigEn": result["mitigEn"],
+                    "_sourceLink": item["link"],
+                }
+            except KeyError as e:
+                print(f"  ! classification missing field {e} for: {item['title_en'][:60]}", file=sys.stderr)
+                log_line({"event": "malformed_classification", "title": item["title_en"], "missing_field": str(e), "raw": result})
+                continue
             alerts.append(alert)
             log_line({"event": "alert_added", "id": next_id, "title": alert["titleEn"], "severity": alert["severity"]})
             next_id += 1
@@ -274,6 +292,22 @@ def main():
           f"{len(alerts)} total now in {ALERTS_FILE}.")
     if new_count >= MAX_NEW_PER_RUN and checked_count > new_count:
         print(f"Note: MAX_NEW_PER_RUN cap reached — some items were left for the next run.")
+
+    # If every single new item failed classification (typically a bad/missing
+    # API key, or the account is out of credits), that's a real problem worth
+    # surfacing loudly rather than quietly reporting "0 alerts added" forever.
+    if checked_count > 0 and api_failures == checked_count:
+        raise RuntimeError(
+            f"All {api_failures} item(s) failed classification this run — "
+            f"check ANTHROPIC_API_KEY and see ingest_log.jsonl for the exact error."
+        )
+
+    return {
+        "checked": checked_count,
+        "added": new_count,
+        "api_failures": api_failures,
+        "fetch_failures": fetch_failures,
+    }
 
 
 if __name__ == "__main__":

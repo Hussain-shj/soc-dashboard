@@ -89,7 +89,8 @@ def _safe_run():
         fac.main()
         _state["last_error"] = None
     except Exception as e:
-        print("ingestion run failed:", e)
+        import traceback
+        traceback.print_exc()  # full traceback in Railway's Deploy Logs
         _state["last_error"] = str(e)
     _state["last_run"] = datetime.now(timezone.utc).isoformat()
     _state["running"] = False

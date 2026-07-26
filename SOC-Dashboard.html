@@ -702,6 +702,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     </div>
   </header>
 
+  <div id="ingestErrorBox" style="display:none;background:rgba(255,77,94,0.12);border:1px solid var(--critical);color:#FFB3BA;border-radius:10px;padding:10px 16px;margin-bottom:18px;font-size:12.5px;line-height:1.7;"></div>
+
   <div class="summary">
     <div class="sum-card total"><div class="n" id="cntTotal">0</div><div class="l">إجمالي التنبيهات المعروضة</div></div>
     <div class="sum-card critical"><div class="n" id="cntCritical">0</div><div class="l">تنبيهات حرجة</div></div>
@@ -1060,6 +1062,15 @@ async function loadAlerts(){
       if(st.last_run){
         const dt = new Date(st.last_run);
         badge.textContent += ` — آخر تحديث ${dt.toLocaleTimeString('ar-AE', {hour:'2-digit', minute:'2-digit'})}`;
+      }
+      const errBox = document.getElementById('ingestErrorBox');
+      if(errBox){
+        if(st.last_error){
+          errBox.style.display = "block";
+          errBox.textContent = "⚠ فشل آخر تحديث تلقائي: " + st.last_error;
+        }else{
+          errBox.style.display = "none";
+        }
       }
     }
   }catch(e){
