@@ -105,7 +105,23 @@ def _scheduler_loop():
         time.sleep(max(INTERVAL_HOURS, 0.1) * 3600)
 
 
+# Start the background scheduler as soon as this module is imported — not
+# only when run directly with `python server.py`. This matters because
+# Railway (or any Nixpacks-based platform) may choose to serve a detected
+# Flask app through gunicorn ("gunicorn server:app"), which imports this
+# module but never executes an `if __name__ == "__main__"` block. Gating
+# the scheduler behind that guard meant it silently never ran under
+# gunicorn — which is exactly what a permanently-null last_run indicates.
+_scheduler_started = False
+def _start_scheduler_once():
+    global _scheduler_started
+    if not _scheduler_started:
+        _scheduler_started = True
+        threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+_start_scheduler_once()
+
+
 if __name__ == "__main__":
-    threading.Thread(target=_scheduler_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
