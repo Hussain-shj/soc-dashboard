@@ -263,16 +263,23 @@ def main():
                 # instead of silently discarding it once the cap is hit.
                 continue
 
-            seen[item["seen_key"]] = True  # never re-check this item again, relevant or not
             checked_count += 1
 
             result, err = classify(item)
             if not result:
+                # Do NOT mark as seen: a bad API key, rate limit, or outage
+                # is a transient/persistent problem with US, not with this
+                # item — it must be retried once the real issue is fixed,
+                # or every failed run permanently burns through the queue.
                 log_line({"event": "classify_failed", "title": item["title_en"], "source": item["source"], "error": err})
                 api_failures += 1
                 if first_api_error is None:
                     first_api_error = err
                 continue
+
+            # From here on the item was successfully classified one way or
+            # another — safe to mark seen so it's never reconsidered again.
+            seen[item["seen_key"]] = True
 
             if not result.get("relevant"):
                 log_line({"event": "skipped_not_relevant", "title": item["title_en"], "source": item["source"]})
