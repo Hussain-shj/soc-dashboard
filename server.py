@@ -47,7 +47,7 @@ INTERVAL_HOURS = float(os.environ.get("INGEST_INTERVAL_HOURS", "2"))
 
 app = Flask(__name__, static_folder=None)
 
-_state = {"last_run": None, "last_error": None, "running": False}
+_state = {"last_run": None, "last_error": None, "last_summary": None, "running": False}
 _lock = threading.Lock()
 
 
@@ -68,6 +68,7 @@ def status():
     return jsonify({
         "last_run": _state["last_run"],
         "last_error": _state["last_error"],
+        "last_summary": _state["last_summary"],
         "running": _state["running"],
         "alerts_count": len(fac.load_json(fac.ALERTS_FILE, [])),
         "interval_hours": INTERVAL_HOURS,
@@ -86,7 +87,7 @@ def _safe_run():
     with _lock:
         _state["running"] = True
     try:
-        fac.main()
+        _state["last_summary"] = fac.main()
         _state["last_error"] = None
     except Exception as e:
         import traceback

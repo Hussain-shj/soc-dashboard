@@ -293,9 +293,15 @@ def main():
     if new_count >= MAX_NEW_PER_RUN and checked_count > new_count:
         print(f"Note: MAX_NEW_PER_RUN cap reached — some items were left for the next run.")
 
-    # If every single new item failed classification (typically a bad/missing
-    # API key, or the account is out of credits), that's a real problem worth
-    # surfacing loudly rather than quietly reporting "0 alerts added" forever.
+    # Surface real problems loudly instead of quietly reporting "0 alerts
+    # added" forever with no explanation.
+    if fetch_failures == len(FEEDS):
+        raise RuntimeError(
+            f"Could not fetch ANY of the {len(FEEDS)} feed(s) this run — "
+            f"see ingest_log.jsonl (event: fetch_failed) for the exact error per feed. "
+            f"This is often outbound network restrictions on the hosting platform, "
+            f"or the feed URL itself changed."
+        )
     if checked_count > 0 and api_failures == checked_count:
         raise RuntimeError(
             f"All {api_failures} item(s) failed classification this run — "
