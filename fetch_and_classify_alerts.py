@@ -255,11 +255,14 @@ def main():
         for item in items:
             if item["seen_key"] in seen:
                 continue
-            seen[item["seen_key"]] = True  # never re-check this item again, relevant or not
-            checked_count += 1
 
             if new_count >= MAX_NEW_PER_RUN:
+                # Don't mark this item seen — leave it for the next run
+                # instead of silently discarding it once the cap is hit.
                 continue
+
+            seen[item["seen_key"]] = True  # never re-check this item again, relevant or not
+            checked_count += 1
 
             result = classify(item)
             if not result:
