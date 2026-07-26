@@ -194,6 +194,7 @@ Source: {source}
 
 
 def classify(item):
+    """Returns (result_dict_or_None, error_message_or_None)."""
     prompt = CLASSIFY_PROMPT.format(
         categories=CATEGORIES,
         title=item["title_en"],
@@ -212,16 +213,16 @@ def classify(item):
         # reason and skip just this item instead of crashing the whole run.
         print(f"  ! Claude API call failed for '{item['title_en'][:60]}': {e}", file=sys.stderr)
         log_line({"event": "api_call_failed", "title": item["title_en"], "error": str(e)})
-        return None
+        return None, str(e)
 
     text = resp.content[0].text.strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
     try:
-        return json.loads(text)
+        return json.loads(text), None
     except json.JSONDecodeError:
         print(f"  ! could not parse Claude's response for: {item['title_en'][:60]}", file=sys.stderr)
         log_line({"event": "parse_failed", "title": item["title_en"], "raw_response": text[:500]})
-        return None
+        return None, f"Could not parse Claude's response as JSON: {text[:200]!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +237,7 @@ def main():
     checked_count = 0
     api_failures = 0
     fetch_failures = 0
+    first_api_error = None
     feed_results = []  # per-feed diagnostic detail, returned to the caller
 
     for feed in FEEDS:
@@ -264,10 +266,12 @@ def main():
             seen[item["seen_key"]] = True  # never re-check this item again, relevant or not
             checked_count += 1
 
-            result = classify(item)
+            result, err = classify(item)
             if not result:
-                log_line({"event": "classify_failed", "title": item["title_en"], "source": item["source"]})
+                log_line({"event": "classify_failed", "title": item["title_en"], "source": item["source"], "error": err})
                 api_failures += 1
+                if first_api_error is None:
+                    first_api_error = err
                 continue
 
             if not result.get("relevant"):
@@ -326,8 +330,8 @@ def main():
         )
     if checked_count > 0 and api_failures == checked_count:
         raise RuntimeError(
-            f"All {api_failures} item(s) failed classification this run — "
-            f"check ANTHROPIC_API_KEY and see ingest_log.jsonl for the exact error."
+            f"All {api_failures} item(s) failed classification this run. "
+            f"First error: {first_api_error}"
         )
 
     return {
