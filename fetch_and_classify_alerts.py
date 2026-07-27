@@ -44,17 +44,25 @@ SETUP
      and an "Execute Command" / "Run script" step that runs this file.
 
 --------------------------------------------------------------------------
-EMAIL SETUP (optional — leave GMAIL_ADDRESS unset to skip email entirely)
+EMAIL SETUP (optional — leave RESEND_API_KEY unset to skip email entirely)
 --------------------------------------------------------------------------
-Sends via Gmail's SMTP server. Set these as environment variables (on
-Railway: Variables tab — never put real secrets in this file):
+Sends via Resend's HTTPS API (https://resend.com) rather than SMTP — most
+hosting platforms, including Railway on its Hobby plan, block outbound SMTP
+ports (25/465/587) entirely to prevent spam abuse, which breaks Gmail SMTP
+regardless of how correct the App Password is. Resend sends over plain
+HTTPS, which isn't blocked.
 
-  GMAIL_ADDRESS        the Gmail address to send FROM, e.g. you@gmail.com
-  GMAIL_APP_PASSWORD   a 16-character Gmail "App Password" — NOT your normal
-                        Gmail password. Create one at:
-                        https://myaccount.google.com/apppasswords
-                        (requires 2-Step Verification enabled on the account)
-  EMAIL_RECIPIENT      the single address to notify, e.g. you@yourorg.gov.ae
+Set these as environment variables (on Railway: Variables tab — never put
+real secrets in this file):
+
+  RESEND_API_KEY   from https://resend.com (free tier is plenty for this) —
+                    sign up, then Dashboard -> API Keys -> Create API Key
+  EMAIL_RECIPIENT  the single address to notify, e.g. you@yourorg.gov.ae
+  EMAIL_SENDER     optional — defaults to onboarding@resend.dev, which
+                    works out of the box but ONLY delivers to the email
+                    address you signed up to Resend with. To send to any
+                    other address, verify your own domain in Resend's
+                    dashboard and set this to an address on that domain.
 
 Add or remove sources by editing the FEEDS list below.
 --------------------------------------------------------------------------
@@ -65,8 +73,6 @@ import os
 import re
 import sys
 import hashlib
-import smtplib
-from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 
@@ -212,14 +218,20 @@ Source: {source}
 
 
 def send_email_digest(new_alerts):
-    """Send a short 'FYI, new alerts were added' email via Gmail SMTP.
-    Silently does nothing if the required env vars aren't set, so email
-    stays fully optional and never blocks the ingestion pipeline."""
-    gmail_address = os.environ.get("GMAIL_ADDRESS")
-    gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD")
+    """Send a short 'FYI, new alerts were added' email via the Resend HTTPS
+    API. Silently does nothing if the required env vars aren't set, so
+    email stays fully optional and never blocks the ingestion pipeline.
+
+    Why Resend instead of Gmail SMTP: Railway (like most hosting platforms)
+    blocks outbound SMTP ports (25/465/587) entirely on the Hobby plan to
+    prevent spam abuse — that's a network-level block, not a credentials
+    problem, so no Gmail App Password can work around it there. Resend
+    sends over plain HTTPS instead, which isn't blocked."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    sender = os.environ.get("EMAIL_SENDER", "onboarding@resend.dev")
     recipient = os.environ.get("EMAIL_RECIPIENT")
 
-    if not (gmail_address and gmail_app_password and recipient):
+    if not (api_key and recipient):
         return  # email not configured — this is fine, it's optional
 
     if not new_alerts:
@@ -235,22 +247,27 @@ def send_email_digest(new_alerts):
     lines.append("افتح لوحة الـ SOC لمراجعة التفاصيل الكاملة والإجراءات الموصى بها.")
     body = "\n".join(lines)
 
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = f"SOC — {len(new_alerts)} تنبيه(ات) أمنية جديدة"
-    msg["From"] = gmail_address
-    msg["To"] = recipient
-
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
-            server.starttls()
-            server.login(gmail_address, gmail_app_password)
-            server.send_message(msg)
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "from": sender,
+                "to": [recipient],
+                "subject": f"SOC — {len(new_alerts)} تنبيه(ات) أمنية جديدة",
+                "text": body,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
         print(f"  ✉ sent email digest for {len(new_alerts)} new alert(s) to {recipient}")
         log_line({"event": "email_sent", "count": len(new_alerts), "recipient": recipient})
     except Exception as e:
         # A failed email must never break the ingestion run itself.
-        print(f"  ! failed to send email digest: {e}", file=sys.stderr)
-        log_line({"event": "email_failed", "error": str(e)})
+        detail = getattr(e, "response", None)
+        detail_text = detail.text[:300] if detail is not None else str(e)
+        print(f"  ! failed to send email digest: {detail_text}", file=sys.stderr)
+        log_line({"event": "email_failed", "error": detail_text})
 
 
 def classify(item):
