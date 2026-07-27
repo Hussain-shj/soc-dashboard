@@ -72,8 +72,9 @@ import json
 import os
 import re
 import sys
+import time
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 
 import requests
@@ -102,6 +103,34 @@ FEEDS = [
     # {"name": "CISA Advisories", "url": "https://www.cisa.gov/cybersecurity-advisories/all.xml"},
     # {"name": "Huntress", "url": "https://www.huntress.com/blog/rss.xml"},
 ]
+
+# ---------------------------------------------------------------------------
+# Product watchlist — vulnerabilities specific to the products you actually
+# run, sourced from the NIST National Vulnerability Database (NVD), which is
+# the one place with a free, reliable, public API covering every vendor —
+# unlike vendor-specific feeds (F5 retired its public RSS entirely; Oracle
+# only publishes static quarterly advisory pages with no feed at all).
+#
+# TO ADD A PRODUCT IN THE FUTURE: just add another string to this list. Use
+# the product's specific name (not just the vendor) to keep results relevant
+# — "Oracle Database" instead of just "Oracle", which would match every
+# Oracle product ever assigned a CVE.
+# ---------------------------------------------------------------------------
+PRODUCT_WATCHLIST = [
+    "SQL Server",
+    "F5 BIG-IP",
+    "Windows Server",
+    "Active Directory",
+    "Windows 10",
+    "Windows 11",
+    "Oracle Database",
+    "Oracle Application Express",
+    "SharePoint",
+    "Visual Studio",
+    "Team Foundation Server",
+]
+NVD_LOOKBACK_DAYS = 4     # how far back to search each run (overlap handled by seen_ids.json)
+NVD_MAX_PER_PRODUCT = 10  # cap results per product per run
 
 SEEN_FILE = "seen_ids.json"        # tracks which feed items we've already triaged
 ALERTS_FILE = "alerts.json"        # consumed directly by SOC-Dashboard.html
@@ -168,6 +197,53 @@ def fetch_feed_items(feed):
         })
         if len(items) >= MAX_ITEMS_PER_FEED:
             break
+    return items
+
+
+def fetch_nvd_items(product_keyword):
+    """Query NVD's public CVE API for a specific product keyword, looking
+    back NVD_LOOKBACK_DAYS. Works for ANY vendor (Microsoft, F5, Oracle,
+    etc.) through one uniform mechanism, since NVD covers every CVE
+    regardless of vendor — unlike vendor-specific feeds, several of which
+    (F5, Oracle) don't have a usable public RSS feed at all anymore."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=NVD_LOOKBACK_DAYS)
+    params = {
+        "keywordSearch": product_keyword,
+        "pubStartDate": start.strftime("%Y-%m-%dT%H:%M:%S.000"),
+        "pubEndDate": end.strftime("%Y-%m-%dT%H:%M:%S.000"),
+        "resultsPerPage": NVD_MAX_PER_PRODUCT,
+    }
+    headers = {"User-Agent": "Mozilla/5.0"}
+    nvd_api_key = os.environ.get("NVD_API_KEY")
+    if nvd_api_key:
+        headers["apiKey"] = nvd_api_key
+
+    resp = requests.get(
+        "https://services.nvd.nist.gov/rest/json/cves/2.0",
+        params=params, headers=headers, timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    items = []
+    for v in data.get("vulnerabilities", []):
+        cve = v.get("cve", {})
+        cve_id = cve.get("id")
+        if not cve_id:
+            continue
+        descs = cve.get("descriptions", [])
+        desc_text = next((d["value"] for d in descs if d.get("lang") == "en"), "")
+        if not desc_text:
+            continue
+        items.append({
+            "seen_key": cve_id,
+            "source": f"NVD — {product_keyword}",
+            "title_en": f"{cve_id} — {product_keyword}",
+            "summary_en": desc_text[:800],
+            "link": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+            "pub_date": cve.get("published", ""),
+        })
     return items
 
 
@@ -321,22 +397,15 @@ def main():
     api_failures = 0
     fetch_failures = 0
     first_api_error = None
-    feed_results = []  # per-feed diagnostic detail, returned to the caller
+    feed_results = []  # per-source diagnostic detail, returned to the caller
     newly_added = []  # full alert objects added this run, for the email digest
 
-    for feed in FEEDS:
-        print(f"Checking {feed['name']}...")
-        try:
-            items = fetch_feed_items(feed)
-        except Exception as e:
-            print(f"  ! failed to fetch {feed['name']}: {e}", file=sys.stderr)
-            log_line({"event": "fetch_failed", "feed": feed["name"], "error": str(e)})
-            fetch_failures += 1
-            feed_results.append({"feed": feed["name"], "ok": False, "error": str(e), "items_found": 0, "new_items": 0})
-            continue
-
-        feed_new_before = new_count
-        feed_checked_before = checked_count
+    def process_items(items, source_label):
+        # Shared per-item pipeline for both RSS feed items and NVD product-
+        # watchlist items — same dedup/classify/add logic either way.
+        nonlocal next_id, new_count, checked_count, api_failures, first_api_error
+        checked_before = checked_count
+        added_before = new_count
 
         for item in items:
             if item["seen_key"] in seen:
@@ -398,15 +467,46 @@ def main():
             print(f"  + added [{alert['severity']}] {alert['titleEn'][:70]}")
 
         feed_results.append({
-            "feed": feed["name"], "ok": True, "error": None,
+            "feed": source_label, "ok": True, "error": None,
             "items_found": len(items),
-            "new_items": checked_count - feed_checked_before,
-            "added": new_count - feed_new_before,
+            "new_items": checked_count - checked_before,
+            "added": new_count - added_before,
         })
+
+    # ---- RSS feeds ----
+    for feed in FEEDS:
+        print(f"Checking {feed['name']}...")
+        try:
+            items = fetch_feed_items(feed)
+        except Exception as e:
+            print(f"  ! failed to fetch {feed['name']}: {e}", file=sys.stderr)
+            log_line({"event": "fetch_failed", "feed": feed["name"], "error": str(e)})
+            fetch_failures += 1
+            feed_results.append({"feed": feed["name"], "ok": False, "error": str(e), "items_found": 0, "new_items": 0})
+            continue
+        process_items(items, feed["name"])
+
+    # ---- Product watchlist (NVD) ----
+    total_sources = len(FEEDS) + len(PRODUCT_WATCHLIST)
+    for i, product in enumerate(PRODUCT_WATCHLIST):
+        print(f"Checking NVD for {product}...")
+        try:
+            items = fetch_nvd_items(product)
+        except Exception as e:
+            print(f"  ! failed to query NVD for {product}: {e}", file=sys.stderr)
+            log_line({"event": "fetch_failed", "feed": f"NVD — {product}", "error": str(e)})
+            fetch_failures += 1
+            feed_results.append({"feed": f"NVD — {product}", "ok": False, "error": str(e), "items_found": 0, "new_items": 0})
+            continue
+        process_items(items, f"NVD — {product}")
+        # Respect NVD's public rate limit (5 requests / 30s without an API
+        # key) — only sleep between calls, not after the last one.
+        if not os.environ.get("NVD_API_KEY") and i < len(PRODUCT_WATCHLIST) - 1:
+            time.sleep(6)
 
     save_json(SEEN_FILE, seen)
     save_json(ALERTS_FILE, alerts)
-    print(f"\nDone. Checked {checked_count} new feed item(s), added {new_count} alert(s). "
+    print(f"\nDone. Checked {checked_count} new item(s) across {total_sources} source(s), added {new_count} alert(s). "
           f"{len(alerts)} total now in {ALERTS_FILE}.")
     if new_count >= MAX_NEW_PER_RUN and checked_count > new_count:
         print(f"Note: MAX_NEW_PER_RUN cap reached — some items were left for the next run.")
@@ -414,14 +514,14 @@ def main():
     if newly_added:
         send_email_digest(newly_added)
 
-    # Surface a TOTAL outage loudly (every feed unreachable) — partial
-    # failures are still visible via feed_results below without aborting.
-    if fetch_failures == len(FEEDS):
+    # Surface a TOTAL outage loudly (every single source unreachable) —
+    # partial failures are still visible via feed_results without aborting.
+    if fetch_failures == total_sources:
         raise RuntimeError(
-            f"Could not fetch ANY of the {len(FEEDS)} feed(s) this run — "
-            f"see feed_results in the last run summary for the exact error per feed. "
+            f"Could not fetch ANY of the {total_sources} source(s) this run — "
+            f"see feed_results in the last run summary for the exact error per source. "
             f"This is often outbound network restrictions on the hosting platform, "
-            f"or the feed URL itself changed."
+            f"or a source URL itself changed."
         )
     if checked_count > 0 and api_failures == checked_count:
         raise RuntimeError(
