@@ -21,15 +21,19 @@ Environment variables (set these in Railway's "Variables" tab):
   DATA_DIR               where alerts.json / seen_ids.json / logs live.
                          Point this at your mounted Volume, e.g. /data
   INGEST_INTERVAL_HOURS  how often to check the feeds (default: 2)
+  DASHBOARD_USERNAME     optional — set together with DASHBOARD_PASSWORD to
+                         put the whole site behind a login prompt
+  DASHBOARD_PASSWORD     optional — see above
   PORT                   set automatically by Railway — do not set manually
 """
 
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Flask, send_from_directory, jsonify
+from flask import Flask, send_from_directory, jsonify, request, Response
 
 import fetch_and_classify_alerts as fac
 
@@ -44,11 +48,34 @@ fac.SEEN_FILE = os.path.join(DATA_DIR, "seen_ids.json")
 fac.LOG_FILE = os.path.join(DATA_DIR, "ingest_log.jsonl")
 
 INTERVAL_HOURS = float(os.environ.get("INGEST_INTERVAL_HOURS", "2"))
+DASHBOARD_USERNAME = os.environ.get("DASHBOARD_USERNAME")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
 
 app = Flask(__name__, static_folder=None)
 
 _state = {"last_run": None, "last_error": None, "last_summary": None, "running": False}
 _lock = threading.Lock()
+
+
+@app.before_request
+def _require_login():
+    # Only enforced once BOTH env vars are set — leaving them unset keeps
+    # the site open, so this never silently locks anyone out on first setup.
+    if not (DASHBOARD_USERNAME and DASHBOARD_PASSWORD):
+        return None
+
+    auth = request.authorization
+    valid = (
+        auth
+        and secrets.compare_digest(auth.username or "", DASHBOARD_USERNAME)
+        and secrets.compare_digest(auth.password or "", DASHBOARD_PASSWORD)
+    )
+    if not valid:
+        return Response(
+            "Login required", 401,
+            {"WWW-Authenticate": 'Basic realm="SOC Dashboard"'},
+        )
+    return None
 
 
 @app.route("/")

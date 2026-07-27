@@ -17,9 +17,12 @@ What it does, every time it runs:
      The dashboard automatically picks this file up on next page load
      (see loadAlerts() in the dashboard's own script) — no manual editing.
 
-This script does NOT send anything to anyone. Sending stays manual and
-happens from inside the dashboard, by design, until you're ready to trust
-the automation further.
+This script does NOT send anything to employees/IT — that stays manual from
+inside the dashboard, by design. It CAN optionally send a short email digest
+to a single internal address (e.g. yourself or the security team) whenever
+new alerts are added, purely as an "FYI, new alerts are in" notification —
+see EMAIL SETUP below. That's a notification about the dashboard, not a
+message to staff.
 
 --------------------------------------------------------------------------
 SETUP
@@ -40,6 +43,19 @@ SETUP
    - No-code option: an n8n or Power Automate flow with a Schedule trigger
      and an "Execute Command" / "Run script" step that runs this file.
 
+--------------------------------------------------------------------------
+EMAIL SETUP (optional — leave GMAIL_ADDRESS unset to skip email entirely)
+--------------------------------------------------------------------------
+Sends via Gmail's SMTP server. Set these as environment variables (on
+Railway: Variables tab — never put real secrets in this file):
+
+  GMAIL_ADDRESS        the Gmail address to send FROM, e.g. you@gmail.com
+  GMAIL_APP_PASSWORD   a 16-character Gmail "App Password" — NOT your normal
+                        Gmail password. Create one at:
+                        https://myaccount.google.com/apppasswords
+                        (requires 2-Step Verification enabled on the account)
+  EMAIL_RECIPIENT      the single address to notify, e.g. you@yourorg.gov.ae
+
 Add or remove sources by editing the FEEDS list below.
 --------------------------------------------------------------------------
 """
@@ -49,6 +65,8 @@ import os
 import re
 import sys
 import hashlib
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 
@@ -193,6 +211,48 @@ Source: {source}
 """
 
 
+def send_email_digest(new_alerts):
+    """Send a short 'FYI, new alerts were added' email via Gmail SMTP.
+    Silently does nothing if the required env vars aren't set, so email
+    stays fully optional and never blocks the ingestion pipeline."""
+    gmail_address = os.environ.get("GMAIL_ADDRESS")
+    gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD")
+    recipient = os.environ.get("EMAIL_RECIPIENT")
+
+    if not (gmail_address and gmail_app_password and recipient):
+        return  # email not configured — this is fine, it's optional
+
+    if not new_alerts:
+        return
+
+    sev_ar = {"critical": "حرج", "high": "عالي", "medium": "متوسط"}
+    lines = [f"تمت إضافة {len(new_alerts)} تنبيه(ات) أمنية جديدة إلى لوحة الـ SOC:\n"]
+    for a in new_alerts:
+        lines.append(f"[{sev_ar.get(a['severity'], a['severity'])}] {a['title']}")
+        lines.append(f"  المصدر: {a['source']} | التاريخ: {a['date']}")
+        lines.append(f"  {a['desc']}")
+        lines.append("")
+    lines.append("افتح لوحة الـ SOC لمراجعة التفاصيل الكاملة والإجراءات الموصى بها.")
+    body = "\n".join(lines)
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"SOC — {len(new_alerts)} تنبيه(ات) أمنية جديدة"
+    msg["From"] = gmail_address
+    msg["To"] = recipient
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+            server.starttls()
+            server.login(gmail_address, gmail_app_password)
+            server.send_message(msg)
+        print(f"  ✉ sent email digest for {len(new_alerts)} new alert(s) to {recipient}")
+        log_line({"event": "email_sent", "count": len(new_alerts), "recipient": recipient})
+    except Exception as e:
+        # A failed email must never break the ingestion run itself.
+        print(f"  ! failed to send email digest: {e}", file=sys.stderr)
+        log_line({"event": "email_failed", "error": str(e)})
+
+
 def classify(item):
     """Returns (result_dict_or_None, error_message_or_None)."""
     prompt = CLASSIFY_PROMPT.format(
@@ -245,6 +305,7 @@ def main():
     fetch_failures = 0
     first_api_error = None
     feed_results = []  # per-feed diagnostic detail, returned to the caller
+    newly_added = []  # full alert objects added this run, for the email digest
 
     for feed in FEEDS:
         print(f"Checking {feed['name']}...")
@@ -313,6 +374,7 @@ def main():
                 log_line({"event": "malformed_classification", "title": item["title_en"], "missing_field": str(e), "raw": result})
                 continue
             alerts.append(alert)
+            newly_added.append(alert)
             log_line({"event": "alert_added", "id": next_id, "title": alert["titleEn"], "severity": alert["severity"]})
             next_id += 1
             new_count += 1
@@ -331,6 +393,9 @@ def main():
           f"{len(alerts)} total now in {ALERTS_FILE}.")
     if new_count >= MAX_NEW_PER_RUN and checked_count > new_count:
         print(f"Note: MAX_NEW_PER_RUN cap reached — some items were left for the next run.")
+
+    if newly_added:
+        send_email_digest(newly_added)
 
     # Surface a TOTAL outage loudly (every feed unreachable) — partial
     # failures are still visible via feed_results below without aborting.
