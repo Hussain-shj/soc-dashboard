@@ -1119,7 +1119,10 @@ function renderFilters(){
 
 function renderGrid(){
   const grid = document.getElementById('grid');
-  const list = ALERTS.filter(a => activeCat==="الكل" || a.category===activeCat);
+  const list = ALERTS
+    .filter(a => activeCat==="الكل" || a.category===activeCat)
+    .slice()
+    .sort((a,b) => b.id - a.id); // newest (highest id / most recently added) first
   grid.innerHTML = list.map(a=>`
     <div class="card sev-${a.severity}">
       <div class="card-top">
