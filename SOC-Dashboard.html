@@ -1303,6 +1303,17 @@ async function initDashboard(){
 initDashboard();
 
 /* ---------- Poster generator ---------- */
+const PZ_CATEGORY_EN = {
+  "تصيد احتيالي": "Phishing",
+  "ثغرات وتحديثات": "Vulnerabilities",
+  "برمجيات خبيثة": "Malware",
+  "تهديدات متقدمة": "Advanced Threats",
+  "تحديثات الأجهزة الشخصية والذكية": "Device Updates",
+};
+const PZ_SEV_EN = { critical: "Critical", high: "High", medium: "Medium" };
+let pzCurrentSeverity = "medium";
+let pzCurrentCategoryAr = "تنبيه أمني";
+
 function renderPosterAlertOptions(){
   const sel = document.getElementById('pzAlertSelect');
   sel.innerHTML = `<option value="">— محتوى مخصص (عدّل الحقول يدويًا) —</option>` +
@@ -1321,6 +1332,8 @@ function fillPosterFromAlert(id){
   document.getElementById('pzDescEn').value = a.descEn || "";
   document.getElementById('pzBulletsAr').value = a.mitig.join("\n");
   document.getElementById('pzBulletsEn').value = (a.mitigEn || []).join("\n");
+  pzCurrentSeverity = a.severity || "medium";
+  pzCurrentCategoryAr = a.category || "تنبيه أمني";
   renderPosterPreview();
 }
 
@@ -1372,6 +1385,78 @@ async function ensureFontsLoaded(){
   try{ await document.fonts.ready; }catch(e){}
 }
 
+const PZ_SEV_STYLE = {
+  critical: { bg: '#FEE2E2', fg: '#DC2626' },
+  high:     { bg: '#FEF3C7', fg: '#D97706' },
+  medium:   { bg: '#FEF9C3', fg: '#CA8A04' },
+};
+const PZ_ACCENT_CYCLE = [
+  { bg: '#ECFDF5', fg: '#16A34A' }, // green
+  { bg: '#EFF6FF', fg: '#2563EB' }, // blue
+  { bg: '#FFFBEB', fg: '#F59E0B' }, // amber
+];
+
+function pzRoundRectPath(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+
+// Small flat "icon tile": a rounded-square colored background with a
+// simple checkmark glyph — deliberately generic (no org branding).
+function pzDrawIconTile(ctx, x, y, size, bg, fg){
+  pzRoundRectPath(ctx, x, y, size, size, size*0.28);
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.strokeStyle = fg;
+  ctx.lineWidth = size*0.09;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x+size*0.27, y+size*0.53);
+  ctx.lineTo(x+size*0.44, y+size*0.70);
+  ctx.lineTo(x+size*0.75, y+size*0.32);
+  ctx.stroke();
+}
+
+// Header icon: a simple flat shield (no org logo/branding).
+function pzDrawShieldTile(ctx, x, y, size, bg, fg){
+  pzRoundRectPath(ctx, x, y, size, size, size*0.28);
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.save();
+  const s = size*0.019;
+  ctx.translate(x + size*0.28, y + size*0.19);
+  ctx.scale(s, s);
+  ctx.beginPath();
+  ctx.moveTo(12,0); ctx.lineTo(22,4); ctx.lineTo(22,13);
+  ctx.bezierCurveTo(22,20,17.5,25,12,28);
+  ctx.bezierCurveTo(6.5,25,2,20,2,13);
+  ctx.lineTo(2,4); ctx.closePath();
+  ctx.fillStyle = fg; ctx.fill();
+  ctx.restore();
+}
+
+function pzDrawChip(ctx, text, x, y, bg, fg, font){
+  ctx.font = font;
+  ctx.textBaseline = 'middle';
+  const padX = 18, h = 38;
+  const tw = ctx.measureText(text).width;
+  const w = tw + padX*2;
+  const rectX = ctx.textAlign === 'right' ? x - w : x;
+  pzRoundRectPath(ctx, rectX, y, w, h, h/2);
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.fillStyle = fg;
+  ctx.textAlign = 'center';
+  ctx.fillText(text, rectX + w/2, y + h/2 + 1);
+  return w;
+}
+
 function pzWrapText(ctx, text, maxWidth){
   const words = text.split(/\s+/).filter(Boolean);
   const lines = [];
@@ -1389,201 +1474,136 @@ function pzWrapText(ctx, text, maxWidth){
   return lines.length ? lines : [''];
 }
 
-function pzDrawBadge(ctx, cx, cy, r){
-  ctx.save();
-  ctx.strokeStyle = 'rgba(94,234,212,0.35)';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
-  ctx.strokeStyle = 'rgba(94,234,212,0.22)';
-  ctx.beginPath(); ctx.arc(cx, cy, r-10, 0, Math.PI*2); ctx.stroke();
-  ctx.setLineDash([6,5]);
-  ctx.strokeStyle = 'rgba(94,234,212,0.55)';
-  ctx.beginPath(); ctx.arc(cx, cy, r+7, 0, Math.PI*2); ctx.stroke();
-  ctx.setLineDash([]);
-
-  const grad = ctx.createRadialGradient(cx, cy - r*0.18, 2, cx, cy, r*0.82);
-  grad.addColorStop(0, '#EAFBFC'); grad.addColorStop(0.32, '#7FE3EE');
-  grad.addColorStop(0.62, '#1FA9C7'); grad.addColorStop(1, '#0A5C77');
-  ctx.beginPath(); ctx.arc(cx, cy, r*0.78, 0, Math.PI*2); ctx.fillStyle = grad; ctx.fill();
-
-  // simplified shield glyph
-  const s = r*0.019;
-  ctx.save();
-  ctx.translate(cx - 12*s, cy - 14*s);
-  ctx.scale(s, s);
-  ctx.beginPath();
-  ctx.moveTo(12,0); ctx.lineTo(22,4); ctx.lineTo(22,13);
-  ctx.bezierCurveTo(22,20,17.5,25,12,28);
-  ctx.bezierCurveTo(6.5,25,2,20,2,13);
-  ctx.lineTo(2,4); ctx.closePath();
-  ctx.fillStyle = '#0A4A63'; ctx.fill();
-  ctx.beginPath(); ctx.arc(12,13,3.4,0,Math.PI*2); ctx.fill();
-  ctx.fillRect(10.8,15.5,2.4,5.2);
-  ctx.restore();
-  ctx.restore();
-}
-
-function pzDrawFooter(ctx, W, y){
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, y - 30); ctx.lineTo(W, y - 30); ctx.stroke();
-
-  ctx.font = '700 15px Poppins';
-  ctx.fillStyle = '#F2F7FC';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const handle = 'Shjmunicipality';
-  const sep = '   |   ';
-  const phoneNum = '993';
-  const handleW = ctx.measureText(handle).width;
-  const sepW = ctx.measureText(sep).width;
-  ctx.font = '700 15px Poppins';
-  const phoneW = ctx.measureText(phoneNum).width;
-  const iconsW = 4*26 + 3*10; // 4 decorative circles
-  const totalW = iconsW + 14 + handleW + sepW + 22 + phoneW;
-  let x = W/2 - totalW/2;
-
-  // decorative social circles
-  for(let i=0;i<3;i++){
-    ctx.beginPath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-    ctx.lineWidth = 1.4;
-    ctx.arc(x+13, y, 13, 0, Math.PI*2);
-    ctx.stroke();
-    x += 26+10;
-  }
-  x += 14;
-  ctx.textAlign = 'left';
-  ctx.font = '700 15px Poppins';
-  ctx.fillStyle = '#F2F7FC';
-  ctx.fillText(handle, x, y);
-  x += handleW;
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.font = '400 16px Poppins';
-  ctx.fillText(sep, x, y);
-  x += sepW + 8;
-  // phone circle
-  ctx.beginPath();
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.arc(x+12, y, 12, 0, Math.PI*2);
-  ctx.stroke();
-  x += 30;
-  ctx.font = '700 15px Poppins';
-  ctx.fillStyle = '#F2F7FC';
-  ctx.fillText(phoneNum, x, y);
-  ctx.restore();
-}
-
 function pzLayout(ctx, lang, content, commit){
-  const W = 1000, cx = 500;
-  let y = 50;
+  const W = 1080, margin = 80;
+  const isAr = lang === 'ar';
+  const startX = isAr ? W - margin : margin;   // text/content "start" edge
+  const textAlign = isAr ? 'right' : 'left';
+  const maxTextW = W - margin*2;
+  let y = 70;
 
-  const r = 58;
-  const badgeCy = y + r + 6;
-  if(commit) pzDrawBadge(ctx, cx, badgeCy, r);
-  y = badgeCy + r + 50;
-
-  ctx.direction = lang === 'ar' ? 'rtl' : 'ltr';
+  ctx.direction = isAr ? 'rtl' : 'ltr';
   ctx.textBaseline = 'alphabetic';
-  ctx.textAlign = 'center';
-  const hasLS = 'letterSpacing' in ctx;
 
-  // Title
-  ctx.font = lang === 'ar' ? '800 46px Almarai' : '700 30px Poppins';
-  if(hasLS) ctx.letterSpacing = lang === 'ar' ? '0px' : '3px';
-  const titleLines = pzWrapText(ctx, content.title, 840);
-  const titleLH = lang === 'ar' ? 58 : 42;
+  // Header: small shield tile + severity/category chips on one row.
+  const tileSize = 56;
+  const tileX = isAr ? W - margin - tileSize : margin;
+  if(commit) pzDrawShieldTile(ctx, tileX, y, tileSize, '#EFF6FF', '#2563EB');
+
+  const sev = PZ_SEV_STYLE[content.severity] || PZ_SEV_STYLE.medium;
+  const chipFont = isAr ? '700 15px "IBM Plex Sans Arabic"' : '700 13px Poppins';
+  const chipY = y + 8;
+  const chipTextX = isAr ? tileX - 16 : tileX + tileSize + 16;
+  ctx.textAlign = isAr ? 'right' : 'left';
   if(commit){
-    ctx.fillStyle = '#DFF8FA';
-    titleLines.forEach((line,i)=> ctx.fillText(line, cx, y + i*titleLH));
+    let cx = chipTextX;
+    const w1 = pzDrawChip(ctx, content.severityLabel, cx, chipY, sev.bg, sev.fg, chipFont);
+    cx = isAr ? cx - w1 - 10 : cx + w1 + 10;
+    pzDrawChip(ctx, content.categoryLabel, cx, chipY, '#F1F5F9', '#334155', chipFont);
   }
-  y += titleLines.length*titleLH + 30;
-  if(hasLS) ctx.letterSpacing = '0px';
+  y += tileSize + 34;
 
-  // Lead paragraph
-  const textAlign = lang === 'ar' ? 'right' : 'left';
-  const textX = lang === 'ar' ? 910 : 90;
-  const maxTextW = 820;
+  // Title — large, bold, dark, start-aligned (matches the reference's big
+  // bold headline style).
   ctx.textAlign = textAlign;
-  ctx.font = lang === 'ar' ? '400 22px "IBM Plex Sans Arabic"' : '400 19px Poppins';
-  const leadLines = pzWrapText(ctx, content.desc, maxTextW);
-  const leadLH = lang === 'ar' ? 42 : 34;
+  ctx.font = isAr ? '800 42px Almarai' : '800 34px Poppins';
+  const titleLines = pzWrapText(ctx, content.title, maxTextW);
+  const titleLH = isAr ? 54 : 44;
   if(commit){
-    ctx.fillStyle = '#CFE0EF';
-    leadLines.forEach((line,i)=> ctx.fillText(line, textX, y + i*leadLH));
+    ctx.fillStyle = '#0F172A';
+    titleLines.forEach((line,i)=> ctx.fillText(line, startX, y + i*titleLH));
   }
-  y += leadLines.length*leadLH + 34;
+  y += titleLines.length*titleLH + 28;
 
-  // Sub label
-  ctx.font = lang === 'ar' ? '700 20px Almarai' : '700 18px Poppins';
+  // Description paragraph.
+  ctx.font = isAr ? '400 21px "IBM Plex Sans Arabic"' : '400 18px Poppins';
+  const descLines = pzWrapText(ctx, content.desc, maxTextW);
+  const descLH = isAr ? 38 : 30;
   if(commit){
-    ctx.fillStyle = '#7FE3EE';
-    ctx.fillText(content.subLabel, textX, y);
+    ctx.fillStyle = '#475569';
+    descLines.forEach((line,i)=> ctx.fillText(line, startX, y + i*descLH));
   }
-  y += (lang === 'ar' ? 20 : 18) + 26;
+  y += descLines.length*descLH + 44;
 
-  // Bullets
-  ctx.font = lang === 'ar' ? '400 19px "IBM Plex Sans Arabic"' : '400 16px Poppins';
-  const bulletLH = lang === 'ar' ? 33 : 28;
-  const indent = 26;
-  const bulletTextX = lang === 'ar' ? textX - indent : textX + indent;
-  const bulletMaxW = maxTextW - indent - 6;
-  const dotX = lang === 'ar' ? textX + 6 : textX - 12;
-  content.bullets.forEach(bulletStr=>{
-    const lines = pzWrapText(ctx, bulletStr, bulletMaxW);
+  // "Required actions" section label.
+  ctx.font = isAr ? '800 22px Almarai' : '800 18px Poppins';
+  if(commit){
+    ctx.fillStyle = '#0F172A';
+    ctx.fillText(content.subLabel, startX, y);
+  }
+  y += 38;
+
+  // Action cards — colorful rounded rows, cycling accent colors, each with
+  // an icon tile beside the text (mirrors the reference's colored
+  // strategy-card treatment).
+  const cardIconSize = 44;
+  const cardPad = 22;
+  const iconGap = 18;
+  const textBlockW = maxTextW - cardIconSize - iconGap - cardPad*2;
+  const bulletFont = isAr ? '600 19px "IBM Plex Sans Arabic"' : '600 16px Poppins';
+  ctx.font = bulletFont;
+
+  content.bullets.forEach((bulletStr, i)=>{
+    const accent = PZ_ACCENT_CYCLE[i % PZ_ACCENT_CYCLE.length];
+    const lines = pzWrapText(ctx, bulletStr, textBlockW);
+    const lineH = isAr ? 30 : 25;
+    const cardH = Math.max(cardIconSize + cardPad*2 - 10, lines.length*lineH + cardPad*1.6);
+
     if(commit){
-      ctx.fillStyle = '#5EEAD4';
-      ctx.beginPath();
-      ctx.arc(dotX, y - bulletLH*0.32, 4, 0, Math.PI*2);
+      const cardX = isAr ? W - margin - maxTextW : margin;
+      pzRoundRectPath(ctx, cardX, y, maxTextW, cardH, 18);
+      ctx.fillStyle = accent.bg;
       ctx.fill();
-      ctx.fillStyle = '#DCE7F2';
-      ctx.font = lang === 'ar' ? '400 19px "IBM Plex Sans Arabic"' : '400 16px Poppins';
-      lines.forEach((line,i)=> ctx.fillText(line, bulletTextX, y + i*bulletLH));
+
+      const iconY = y + cardH/2 - cardIconSize/2;
+      const iconX = isAr ? W - margin - cardPad - cardIconSize : margin + cardPad;
+      pzDrawIconTile(ctx, iconX, iconY, cardIconSize, '#FFFFFF', accent.fg);
+
+      const textX = isAr ? iconX - iconGap : iconX + cardIconSize + iconGap;
+      ctx.textAlign = textAlign;
+      ctx.fillStyle = '#1E293B';
+      const textStartY = y + cardH/2 - ((lines.length-1)*lineH)/2 + 6;
+      lines.forEach((line,li)=> ctx.fillText(line, textX, textStartY + li*lineH));
     }
-    y += lines.length*bulletLH + 16;
+    y += cardH + 16;
   });
 
-  y += 26;
+  y += 30;
 
-  // Closing line
-  ctx.textAlign = 'center';
-  ctx.font = lang === 'ar' ? '800 27px Almarai' : '700 15px Poppins';
-  if(hasLS) ctx.letterSpacing = lang === 'ar' ? '0px' : '1.5px';
+  // Closing banner — a full-width colored strip with bold white text.
+  const bannerH = isAr ? 74 : 64;
   if(commit){
+    pzRoundRectPath(ctx, margin, y, W - margin*2, bannerH, 16);
+    ctx.fillStyle = '#0F172A';
+    ctx.fill();
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(content.closing, cx, y);
+    ctx.textAlign = 'center';
+    ctx.font = isAr ? '800 24px Almarai' : '700 15px Poppins';
+    if('letterSpacing' in ctx) ctx.letterSpacing = isAr ? '0px' : '2px';
+    ctx.fillText(content.closing, W/2, y + bannerH/2 + (isAr ? 8 : 5));
+    if('letterSpacing' in ctx) ctx.letterSpacing = '0px';
   }
-  if(hasLS) ctx.letterSpacing = '0px';
-  y += 70;
+  y += bannerH + 36;
 
-  // Footer
+  // Minimal generic footer — no organization name or logo, just a small
+  // neutral caption identifying this as an automated security notice.
+  ctx.font = isAr ? '400 14px "IBM Plex Sans Arabic"' : '400 12px Poppins';
+  if(commit){
+    ctx.fillStyle = '#94A3B8';
+    ctx.textAlign = 'center';
+    ctx.fillText(content.footerCaption, W/2, y);
+  }
   y += 40;
-  if(commit) pzDrawFooter(ctx, W, y);
-  y += 50;
 
   return y;
 }
 
-function pzDrawBackground(ctx, W, H){
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, '#060B18');
-  grad.addColorStop(0.45, '#0A1730');
-  grad.addColorStop(0.78, '#0C1F42');
-  grad.addColorStop(1, '#0A1730');
-  ctx.fillStyle = grad;
+function pzDrawBackground(ctx, W, H, severity){
+  ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, W, H);
-
-  const glow = ctx.createRadialGradient(W/2, H*0.06, 10, W/2, H*0.06, 420);
-  glow.addColorStop(0, 'rgba(56,189,214,0.14)');
-  glow.addColorStop(1, 'rgba(56,189,214,0)');
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, W, Math.min(H, 700));
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.025)';
-  ctx.lineWidth = 1;
-  for(let gx=0; gx<W; gx+=34){ ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,Math.min(H,600)); ctx.stroke(); }
-  for(let gy=0; gy<Math.min(H,600); gy+=34){ ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(W,gy); ctx.stroke(); }
+  const sev = PZ_SEV_STYLE[severity] || PZ_SEV_STYLE.medium;
+  ctx.fillStyle = sev.fg;
+  ctx.fillRect(0, 0, W, 10); // thin top accent bar, color-coded by severity
 }
 
 async function downloadPosterImage(lang){
@@ -1594,32 +1614,43 @@ async function downloadPosterImage(lang){
   try{
     await ensureFontsLoaded();
 
+    const categoryEn = PZ_CATEGORY_EN[pzCurrentCategoryAr] || pzCurrentCategoryAr;
     const content = lang === 'ar' ? {
       title: document.getElementById('pzTitleAr').value || 'تنويه أمني',
       desc: document.getElementById('pzDescAr').value || '',
-      subLabel: 'الإجراءات المطلوبة:',
+      subLabel: 'الإجراءات المطلوبة',
       bullets: document.getElementById('pzBulletsAr').value.split('\n').map(s=>s.trim()).filter(Boolean),
-      closing: 'ابقَ يقظًا واحمِ بياناتك'
+      closing: 'ابقَ يقظًا واحمِ بياناتك',
+      severity: pzCurrentSeverity,
+      severityLabel: sevLabel(pzCurrentSeverity),
+      categoryLabel: pzCurrentCategoryAr,
+      footerCaption: 'تنبيه أمني تلقائي',
     } : {
       title: document.getElementById('pzTitleEn').value || 'Security Notice',
       desc: document.getElementById('pzDescEn').value || '',
-      subLabel: 'Required actions:',
+      subLabel: 'Required Actions',
       bullets: document.getElementById('pzBulletsEn').value.split('\n').map(s=>s.trim()).filter(Boolean),
-      closing: 'STAY ALERT. PROTECT YOUR DATA.'
+      closing: 'STAY ALERT · PROTECT YOUR DATA',
+      severity: pzCurrentSeverity,
+      severityLabel: PZ_SEV_EN[pzCurrentSeverity] || 'Medium',
+      categoryLabel: categoryEn,
+      footerCaption: 'Automated security notice',
     };
 
     // Measure pass (no drawing) to compute the exact height needed.
+    // Minimum height keeps a LinkedIn-friendly ~4:5 portrait ratio at 1080
+    // width even when an alert's content is short.
     const scratch = document.createElement('canvas').getContext('2d');
-    const totalHeight = Math.max(pzLayout(scratch, lang, content, false), 760);
+    const totalHeight = Math.max(pzLayout(scratch, lang, content, false), 1350);
 
     // Real pass at 2x resolution for a crisp download.
     const scale = 2;
     const canvas = document.createElement('canvas');
-    canvas.width = 1000*scale;
+    canvas.width = 1080*scale;
     canvas.height = totalHeight*scale;
     const ctx = canvas.getContext('2d');
     ctx.scale(scale, scale);
-    pzDrawBackground(ctx, 1000, totalHeight);
+    pzDrawBackground(ctx, 1080, totalHeight, pzCurrentSeverity);
     pzLayout(ctx, lang, content, true);
 
     const link = document.createElement('a');
